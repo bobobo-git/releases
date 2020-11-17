@@ -13,24 +13,28 @@ jobs:
       set -o xtrace
 
       if [ "$SURGE_BRANCH" == "" ]; then
-        export SURGE_BRANCH='master'
+        export SURGE_LOCAL_BRANCH='main'
       else
-        export SURGE_BRANCH="${SURGE_BRANCH/refs\/heads\/}"
+        export SURGE_LOCAL_BRANCH="${SURGE_BRANCH/refs\/heads\/}"
       fi
 
-      if ! [[ $SURGE_BRANCH =~ ^(master|release/.+)$ ]]; then
+      if ! [[ $SURGE_LOCAL_BRANCH =~ ^(main|release/.+)$ ]]; then
         exit 1
       fi
 
-      export SURGE_VERSION="${SURGE_BRANCH##*/}"
+      export SURGE_VERSION="${SURGE_LOCAL_BRANCH##*/}"
 
       # get the surge code
-      git clone --depth 1 --branch $SURGE_BRANCH https://github.com/surge-synthesizer/surge.git 
+      git clone --depth 1 --branch $SURGE_LOCAL_BRANCH https://github.com/surge-synthesizer/surge.git 
       cd surge
-      git reset --hard $SURGE_BRANCH
+      git reset --hard $SURGE_LOCAL_BRANCH
       git submodule update --init --recursive
 
-      if [ "$SURGE_VERSION" == "master" ]; then
+      # Generate the skin tutorial 
+      perl scripts/misc/skinTutorialsToMarkdown.pl 
+
+
+      if [ "$SURGE_VERSION" == "main" ]; then
         export SURGE_VERSION="NIGHTLY-$(date +%Y-%m-%d)-$(git rev-parse --short HEAD)"
       fi
       echo "SURGE_VERSION=$SURGE_VERSION"
@@ -38,8 +42,18 @@ jobs:
       # set the active version
       echo $SURGE_VERSION > VERSION
 
+      # Make the git substitute file
+      ./scripts/misc/build-version-override.sh
+
+      cat VERSION
+      cat VERSION_GIT_INFO
+
+      # Remove the .git directory
+      find . -name ".git" -exec rm -rf {} \; || echo "I tried"
+
       cd ..
       mkdir srctar
+      mv surge/skintmp.md srctar/skin_autodoc.md
       tar -cvzf srctar/SurgeSrc_${SURGE_VERSION}.tgz surge
     displayName: Get source for Tarball
     
@@ -56,8 +70,11 @@ jobs:
   strategy:
     matrix:
       mac:
-        imageName: 'macos-10.13'
+        imageName: 'macos-10.14'
         isMac: true
+      macfat:
+        imageName: 'macos-10.15'
+        isMacFat: True
       windows:
         imageName: 'vs2017-win2016'
         isWindows: true
@@ -67,7 +84,7 @@ jobs:
         isWindows: true
         x86: true
       linux:
-        imageName: 'ubuntu-16.04'
+        imageName: 'ubuntu-18.04'
         isLinux: true
 
   pool:
@@ -76,44 +93,41 @@ jobs:
   steps:
   - checkout: none
 
-  - task: DownloadSecureFile@1
-    inputs:
-      secureFile: get-vst2.sh
-
-  - bash: |
-      set -e
-      ls -alFh $AGENT_TEMPDIRECTORY
-      . $AGENT_TEMPDIRECTORY/get-vst2.sh
-      echo "VST2SDK_DIR=$VST2SDK_DIR"
-    displayName: Get VST 2 SDK
+### SETUP SECTION
 
   - bash: |
       set -e
 
       if [ "$SURGE_BRANCH" == "" ]; then
-        export SURGE_BRANCH='master'
+        export SURGE_LOCAL_BRANCH='main'
       else
-        export SURGE_BRANCH="${SURGE_BRANCH/refs\/heads\/}"
+        export SURGE_LOCAL_BRANCH="${SURGE_BRANCH/refs\/heads\/}"
       fi
 
-      if ! [[ $SURGE_BRANCH =~ ^(master|release/.+)$ ]]; then
+      if ! [[ $SURGE_LOCAL_BRANCH =~ ^(main|release/.+)$ ]]; then
         exit 1
       fi
 
-      echo "SURGE_BRANCH=$SURGE_BRANCH"
-      echo "##vso[task.setvariable variable=SURGE_BRANCH]$SURGE_BRANCH"
-      echo "##vso[task.setvariable variable=SURGE_BRANCH;isOutput=true]$SURGE_BRANCH"
+      echo "SURGE_LOCAL_BRANCH=$SURGE_LOCAL_BRANCH"
+      echo "##vso[task.setvariable variable=SURGE_LOCAL_BRANCH]$SURGE_LOCAL_BRANCH"
+      echo "##vso[task.setvariable variable=SURGE_LOCAL_BRANCH;isOutput=true]$SURGE_LOCAL_BRANCH"
 
-      export SURGE_VERSION="${SURGE_BRANCH##*/}"
+      export SURGE_VERSION="${SURGE_LOCAL_BRANCH##*/}"
       echo "SURGE_VERSION=$SURGE_VERSION"
 
       # get the surge code
-      git clone --depth 1 --branch $SURGE_BRANCH https://github.com/surge-synthesizer/surge.git $AGENT_TEMPDIRECTORY/surge
-      mv $AGENT_TEMPDIRECTORY/surge/.git .
-      git reset --hard $SURGE_BRANCH
+      git clone --depth 5 --branch $SURGE_LOCAL_BRANCH https://github.com/surge-synthesizer/surge.git 
+      mv -f surge/* .
+      mv -f surge/.git .
+      rm -rf surge
+      git reset --hard $SURGE_LOCAL_BRANCH
+      ls -al .
+      ls -al libs
+      git status
+
       git submodule update --init --recursive
 
-      if [ "$SURGE_VERSION" == "master" ]; then
+      if [ "$SURGE_VERSION" == "main" ]; then
         export SURGE_VERSION="NIGHTLY-$(date +%Y-%m-%d)-$(git rev-parse --short HEAD)"
       fi
       echo "SURGE_VERSION=$SURGE_VERSION"
@@ -126,175 +140,14 @@ jobs:
       echo "##vso[task.setvariable variable=SURGE_VERSION]$SURGE_VERSION"
       echo "##vso[task.setvariable variable=SURGE_VERSION;isOutput=true]$SURGE_VERSION"
     name: surge
-    displayName: Submodule init
-
-  - bash: |
-      set -e
-      pushd $AGENT_TEMPDIRECTORY
-      export PREMAKE_MAC=https://github.com/premake/premake-core/releases/download/v5.0.0-alpha13/premake-5.0.0-alpha13-macosx.tar.gz
-      curl -L $PREMAKE_MAC --output premake5.tar.gz
-      tar zxvf premake5.tar.gz
-      popd
-
-      export PATH=$AGENT_TEMPDIRECTORY:$PATH
-      ./build-osx.sh --build --verbose
-
-      # In the release pipeline we also want the surge-fx
-      ./build-osx.sh --get-and-build-fx
-
-      ls -alFh target
-      ls -alFh products
-    condition: variables.isMac
-    displayName: Build macOS releases
-
-  - bash: |
-      set -e
-      echo "VST2SDK_DIR=$VST2SDK_DIR"
-      echo "SURGE_VERSION=$SURGE_VERSION"
-      pushd installer_mac
-      ./make_installer.sh $SURGE_VERSION --dmg
-      rm -f *.pkg
-      popd
-    condition: variables.isMac
-    displayName: Make macOS installer
-
-  - task: PublishPipelineArtifact@0
-    inputs:
-      artifactName: 'INSTALLER_MAC_DMG'
-      targetPath: 'installer_mac/installer'
-    condition: variables.isMac
-    displayName: Publish macOS DMG
-
-  - task: NuGetToolInstaller@0
-    condition: variables.isWindows
-    displayName: NuGet
-
-  - bash: |
-      set -e
-      pushd $AGENT_TEMPDIRECTORY
-      export PREMAKE_WINDOWS=https://github.com/premake/premake-core/releases/download/v5.0.0-alpha13/premake-5.0.0-alpha13-windows.zip
-      curl -L $PREMAKE_WINDOWS --output premake5.zip
-      unzip premake5.zip
-      popd
-
-      export PATH=$AGENT_TEMPDIRECTORY:$PATH
-      premake5 vs2017
-      ls -alFh
-
-      # need this because MSBuild.restoreNugetPackages: true fails
-      nuget restore .
-    condition: variables.isWindows
-    displayName: Setup Windows Project
-
-  - task: MSBuild@1
-    inputs:
-      solution: 'buildtask.xml'
-      maximumCpuCount: true
-      platform: 'x64'
-    condition: and(variables.isWindows, variables.x64)
-    displayName: Build Windows x64
+    displayName: all - Setup Source and Version
 
   - bash: |
       set -x
-      mkdir -p fxbuild
-      cd fxbuild
-      git clone https://github.com/surge-synthesizer/surge-fx
-      cd surge-fx
-      git submodule update --init --recursive
+      sudo apt-get update
 
-      mkdir assets
-      curl -o assets/juce-5.4.3-windows.zip https://d30pueezughrda.cloudfront.net/juce/juce-5.4.3-windows.zip
-
-      cd assets
-      unzip juce-5.4.3-windows.zip
-      cd ..
-      assets/JUCE/Projucer.exe --resave surge-fx.jucer
-    condition: variables.isWindows
-    displayName: Setup Windows EffectsBank
-
-  - task: MSBuild@1
-    inputs:
-      solution: 'fxbuild\surge-fx\Builds\VisualStudio2017\SurgeEffectsBank.sln'
-      maximumCpuCount: true
-      platform: 'x64'
-      configuration: 'Release'
-    condition: and(variables.isWindows, variables.x64)
-    displayName: Build Windows x64 EffectsBank
-
-  - task: MSBuild@1
-    inputs:
-      solution: 'fxbuild\surge-fx\Builds\VisualStudio2017\SurgeEffectsBank.sln'
-      maximumCpuCount: true
-      platform: 'Win32'
-      configuration: 'ReleaseWin32'
-    condition: and(variables.isWindows, variables.x86)
-    displayName: Build Windows Win32 EffectsBank
-
-  - bash: |
-      set -x
-      mkdir -p installer_win/direct
-      mkdir -p installer_win/Output
-      ls -l installer_win
-      ls -l target/
-      cp target/vst2/Release/Surge.dll installer_win/direct
-      cp target/vst3/Release/Surge.vst3 installer_win/direct
-      cp fxbuild/surge-fx/Builds/VisualStudio2017/x64/Release/VST3/SurgeEffectsBank.vst3 installer_win/direct
-      cd installer_win/direct
-      ls -l
-      pwd
-      7z.exe a evil.zip Surge.dll Surge.vst3 SurgeEffectsBank.vst3
-      ls -l
-      echo mv evil.zip ../Output/Surge-Win64DLL-${SURGE_VERSION}.zip
-      mv evil.zip ../Output/Surge-Win64DLL-${SURGE_VERSION}.zip
-      ls -l ../Output
-    condition: and(variables.isWindows, variables.x64)
-    displayName: Make a dll only zip for EvilDragon
-
-  - bash: |
-      set -e
-      nuget install innosetup
-      iscc installer_win/surge.iss
-    condition: and(variables.isWindows, variables.x64)
-    displayName: Make Windows x64 installer
-
-
-  - task: PublishPipelineArtifact@0
-    inputs:
-      artifactName: 'INSTALLER_WIN_EXE'
-      targetPath: 'installer_win/Output'
-    condition: and(variables.isWindows, variables.x64)
-    displayName: Publish Windows x64 installer
-
-  - task: MSBuild@1
-    inputs:
-      solution: 'buildtask.xml'
-      maximumCpuCount: true
-      platform: 'Win32'
-    condition: and(variables.isWindows, variables.x86)
-    displayName: Build Windows x86
-
-  - bash: |
-      set -e
-      nuget install innosetup
-      iscc installer_win/surge-x86.iss
-    condition: and(variables.isWindows, variables.x86)
-    displayName: Make Windows x86 installer
-
-  - task: PublishPipelineArtifact@0
-    inputs:
-      artifactName: 'INSTALLER_WIN_X86_EXE'
-      targetPath: 'installer_win/Output'
-    condition: and(variables.isWindows, variables.x86)
-    displayName: Publish Windows x86 installer
-
-  - bash: |
-      set -x
-      pushd $AGENT_TEMPDIRECTORY
-      export PREMAKE_LINUX=https://github.com/premake/premake-core/releases/download/v5.0.0-alpha13/premake-5.0.0-alpha13-linux.tar.gz
-      curl -L $PREMAKE_LINUX --output premake5.tar.gz
-      tar zxvf premake5.tar.gz
-      export PATH=$AGENT_TEMPDIRECTORY:$PATH
-      popd
+      # Requirements for Surge
+      
       sudo apt-get install -y libgtkmm-3.0-dev
       sudo apt-get install -y xcb
       sudo apt-get install -y libxcb-util-dev
@@ -303,25 +156,285 @@ jobs:
       sudo apt-get install -y libxkbcommon-dev
       sudo apt-get install -y libxkbcommon-x11-dev
       sudo apt-get install -y devscripts
-      ./build-linux.sh clean && ./build-linux.sh build
-      find  . -name '*'
+
+      # Requirements for surge-fx
+      sudo apt-get install -y libgtk-3-dev
+      sudo apt-get install -y libwebkit2gtk-4.0
+      sudo apt-get install -y libwebkit2gtk-4.0-dev
+      sudo apt-get install -y libcurl4-openssl-dev
+      sudo apt-get install -y alsa
+      sudp apt-get install -y alsa-tools
+      sudo apt-get install -y libasound2-dev
+      sudo apt-get install -y jack
+      sudo apt-get install -y libjack-dev
+      sudo apt-get install -y libfreetype6-dev
+      sudo apt-get install -y libxinerama-dev
+      sudo apt-get install -y libxcb-xinerama0
+      sudo apt-get install -y libxinerama1
+      sudo apt-get install -y x11proto-xinerama-dev
+      sudo apt-get install -y libxrandr-dev
+      sudo apt-get install -y libgl1-mesa-dev
+      sudo apt-get install -y libxcursor-dev 
+      sudo apt-get install -y libxcursor1 
+      sudo apt-get install -y libxcb-cursor-dev 
+      sudo apt-get install -y libxcb-cursor0
+
     condition: variables.isLinux
-    displayName: Build Linux
+    displayName: linux - Setup Host
+
+#### DO THE SURGE BUILDS
+
+  - bash: |
+      set -e
+      cmake -Bbuild -D AZURE_PIPELINE=1
+
+      cmake --build build --config Release --target pipeline-components
+
+    condition: variables.isLinux
+    displayName: linux - Build Surge
+
+  - bash: |
+      set -e
+
+      set -e
+      cmake -Bbuild -GXcode -D AZURE_PIPELINE=1
+
+      cmake --build build --config Release --target pipeline-components | xcpretty
+
+    condition: variables.isMac
+    displayName: macOS - Build Surge
+
+  - bash: |
+      set -e
+
+      sudo xcode-select -s /Applications/Xcode_12.2.app
+      
+      cmake -Bbuild -GXcode -D AZURE_PIPELINE=1  -D"CMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+
+      cmake --build build --config Release --target pipeline-components | xcpretty
+
+      echo "Running LIPO for quick check"
+      lipo -archs build/surge_products/Surge.component/Contents/MacOS/Surge
+
+    condition: variables.isMacFat
+    displayName: macOS fat - Build Surge
+
+  - bash: |
+      set -e
+
+      mkdir -p build
+      cmake -Bbuild -A x64 -D AZURE_PIPELINE=1
+    condition: and(variables.isWindows, variables.x64)
+    displayName: win64 - Setup Project
+
+  - bash: |
+      set -e
+
+      mkdir -p build
+      cmake -Bbuild -A Win32 -D AZURE_PIPELINE=1
+    condition: and(variables.isWindows, variables.x86)
+    displayName: win32 - Setup Project
+
+
+  - bash: |
+      set -e
+
+      cmake --build build --config Release --target Surge-VST3-Packaged
+    condition: variables.isWindows
+    displayName: win - Build Surge
+
+#### FX Stage
+
+  - bash: |
+      set -e
+
+      git clone https://github.com/surge-synthesizer/surge-fx.git
+      cd surge-fx
+      git submodule update --init --recursive
+
+    displayName: all - Clone FX
+
+  - bash: |
+      set -e
+
+      cd surge-fx
+      cmake -Bbuild
+      cmake --build build --config Release --target well-named-assets
+
+    condition: variables.isLinux
+    displayName: linux - Build FX
+
+  - bash: |
+      set -e
+      
+      cd surge-fx
+      cmake -Bbuild -A x64
+      cmake --build build --config Release --target well-named-assets
+
+    condition: and(variables.isWindows, variables.x64)
+    displayName: win64 - Build FX
+
+  - bash: |
+      set -e
+
+      cd surge-fx
+      cmake -Bbuild -A Win32
+      cmake --build build --config Release --target well-named-assets
+
+    condition: and(variables.isWindows, variables.x86)
+    displayName: win32 - Build FX
+
+  - bash: |
+      set -e
+
+      cd surge-fx
+      cmake -Bbuild -GXcode
+      cmake --build build --config Release --target well-named-assets | xcpretty
+
+    condition: variables.isMac
+    displayName: mac - Build FX
+
+
+### Make the installers
+
+  - bash: |
+      set -e
+      echo "SURGE_VERSION=$SURGE_VERSION"
+      pushd installer_mac
+      ./make_installer.sh $SURGE_VERSION --dmg
+      rm -f *.pkg
+      popd
+    condition: variables.isMac
+    displayName: mac - make installer
+
+  - task: PublishPipelineArtifact@0
+    inputs:
+      artifactName: 'INSTALLER_MAC_DMG'
+      targetPath: 'installer_mac/installer'
+    condition: variables.isMac
+    displayName: mac - publish DMG
+
+  - bash: |
+      set -e
+      echo "SURGE_VERSION=$SURGE_VERSION"
+      pushd installer_mac
+      ./make_installer.sh ${SURGE_VERSION} --dmg
+      mv installer/Surge-${SURGE_VERSION}-Setup.dmg installer/Surge-${SURGE_VERSION}-fat-Setup.dmg
+      rm -f *.pkg
+      popd
+    condition: variables.isMacFat
+    displayName: mac - make installer
+
+  - task: PublishPipelineArtifact@0
+    inputs:
+      artifactName: 'INSTALLER_MAC_FAT_DMG'
+      targetPath: 'installer_mac/installer'
+    condition: variables.isMacFat
+    displayName: mac fat - publish DMG
+
+
+  - task: NuGetToolInstaller@0
+    condition: variables.isWindows
+    displayName: win - Install NuGet for ISCC
+    
+  - bash: |
+      set -e
+      nuget install innosetup
+      iscc installer_win/surge.iss
+    condition: and(variables.isWindows, variables.x64)
+    displayName: win64 - make installer
+
+
+
+  - task: PublishPipelineArtifact@0
+    inputs:
+      artifactName: 'INSTALLER_WIN_EXE'
+      targetPath: 'installer_win/Output'
+    condition: and(variables.isWindows, variables.x64)
+    displayName: win64 - publish installer
+    
+  - bash: |
+      set -e
+      export ZD=ziptmp/SurgeZip-${SURGE_VERSION}
+      mkdir -p ${ZD}
+      mkdir -p ${ZD}/SurgeSynthTeam
+      cp build/surge_products/Surge.vst3 ${ZD}/SurgeSynthTeam || echo "NoVST3"
+      cp -R surge-fx/build/product/SurgeEffectsBank.vst3 ${ZD}/SurgeSynthTeam || echo "NoSEB"
+      mkdir -p ${ZD}/SurgeSynthTeam/SurgeUserData
+      mkdir -p ${ZD}/SurgeSynthTeam/SurgeData
+      cp -R resources/data/* ${ZD}/SurgeSynthTeam/SurgeData
+
+      echo "This contains a portable Surge install of version ${SURGE_VERSION}, as described in the manual" > ${ZD}/README.txt
+
+      pushd ziptmp
+      7z a Surge-${SURGE_VERSION}-win64.zip SurgeZip-${SURGE_VERSION}\\
+      popd
+
+      mkdir zipfinal
+      mv ziptmp/*.zip zipfinal
+
+      ls -l zipfinal
+    condition: and(variables.isWindows, variables.x64)
+    displayName: win64 - make zip version
+
+  - task: PublishPipelineArtifact@0
+    inputs:
+      artifactName: 'INSTALLER_WIN_ZIP'
+      targetPath: 'zipfinal'
+    condition: and(variables.isWindows, variables.x64)
+    displayName: win64 - publish windows zip
+
+
+  - bash: |
+      set -e
+      nuget install innosetup
+      iscc installer_win/surge-x86.iss
+    condition: and(variables.isWindows, variables.x86)
+    displayName: win32 - make installer
+
+  - task: PublishPipelineArtifact@0
+    inputs:
+      artifactName: 'INSTALLER_WIN_X86_EXE'
+      targetPath: 'installer_win/Output'
+    condition: and(variables.isWindows, variables.x86)
+    displayName: win32 - publish installer
 
   - bash: |
       echo "SURGE_VERSION=$SURGE_VERSION"
       pushd installer_linux
-      ./make_deb.sh 
+      echo "sudo makedeb so we get root file perms, since --root-owner-group doesn't work on ubuntu 16.04"
+      echo "sudo ./make_deb.sh $SURGE_VERSION"
+      sudo ./make_deb.sh "$SURGE_VERSION"
       popd
     condition: variables.isLinux
-    displayName: Make Linux deb installer
+    displayName: linux - make deb installer
 
   - task: PublishPipelineArtifact@0
     inputs:
       artifactName: 'INSTALLER_LINUX_DEB'
       targetPath: 'installer_linux/product'
     condition: variables.isLinux
-    displayName: Publish Linux deb installer
+    displayName: linux - publish deb installer
+
+  # Finally make the git info
+  - bash: |
+      mkdir -p stage_git/git_info
+      git log -1 --pretty=format:'%h : %s - %an' > stage_git/git_info/git_nightly_log_display
+      git log -1 --pretty=format:'%h : %s%n%aD%n%an%n%n%B' > stage_git/git_info/git_nightly_log_long_display
+      git log -5 --pretty=format:'%h : %s - %an' > stage_git/git_info/git_nightly_recent_five
+      git log -1 --pretty=format:'%h' > stage_git/git_info/git_nightly_log_hash
+
+      cat stage_git/git_info/*
+
+    condition: variables.isMac
+    displayName: Use the mac build to make git log info
+
+  - task: PublishPipelineArtifact@0
+    inputs:
+      artifactName: 'GIT_INFO'
+      targetPath: 'stage_git/'
+    condition: variables.isMac
+    displayName: Publish the Git Info
 
 
 - job: Release
@@ -329,7 +442,7 @@ jobs:
   condition: succeeded()
   variables:
     SURGE_VERSION: $[ dependencies.Build.outputs['mac.surge.SURGE_VERSION'] ]
-    SURGE_BRANCH: $[ dependencies.Build.outputs['mac.surge.SURGE_BRANCH'] ]
+    SURGE_BRANCH: $[ dependencies.Build.outputs['mac.surge.SURGE_LOCAL_BRANCH'] ]
 
   steps:
   - checkout: self
@@ -340,7 +453,11 @@ jobs:
 
   - task: DownloadSecureFile@1
     inputs:
-      secureFile: update-website.sh
+      secureFile: discord-nightly.webhook
+
+  - task: DownloadSecureFile@1
+    inputs:
+      secureFile: checkout-website.sh
 
   - task: DownloadPipelineArtifact@0
     inputs:
@@ -349,7 +466,17 @@ jobs:
 
   - task: DownloadPipelineArtifact@0
     inputs:
+      artifactName: 'INSTALLER_MAC_FAT_DMG'
+      targetPath: $(System.DefaultWorkingDirectory)
+
+  - task: DownloadPipelineArtifact@0
+    inputs:
       artifactName: 'INSTALLER_WIN_EXE'
+      targetPath: $(System.DefaultWorkingDirectory)
+
+  - task: DownloadPipelineArtifact@0
+    inputs:
+      artifactName: 'INSTALLER_WIN_ZIP'
       targetPath: $(System.DefaultWorkingDirectory)
 
   - task: DownloadPipelineArtifact@0
@@ -367,6 +494,11 @@ jobs:
       artifactName: 'SOURCE_TARBALL'
       targetPath: $(System.DefaultWorkingDirectory)
 
+  - task: DownloadPipelineArtifact@0
+    inputs:
+      artifactName: 'GIT_INFO'
+      targetPath: $(System.DefaultWorkingDirectory)
+
   - bash: |
       set -e
       set -x
@@ -377,10 +509,14 @@ jobs:
 
       mkdir -p releases
       mv *.exe releases
-      mv *.zip releases
       mv *.dmg releases
       mv *.deb releases
       mv *.tgz releases
+      mv *.zip releases
+
+      mkdir -p website_includes
+      mv *.md website_includes
+      ls -l website_includes
 
       openssl dgst -sha256 releases/* > release_sha256.txt
       mv release_sha256.txt releases
@@ -390,13 +526,54 @@ jobs:
       export GHR=ghr_v0.12.0_linux_amd64
       curl -L https://github.com/tcnksm/ghr/releases/download/v0.12.0/$GHR.tar.gz --output ghr.tar.gz
       tar zxvf ghr.tar.gz
-      if [ "$SURGE_BRANCH" == "master" ]; then
-        export SURGE_BRANCH="NIGHTLY"
+
+      echo "SURGE BRANCH is $SURGE_BRANCH"
+      if [ "$SURGE_BRANCH" == "main" ]; then
+        echo "Exporting to NIGHTLY"
+        export SURGE_LOCAL_BRANCH="NIGHTLY"
         export PRE="-prerelease"
       else
-        export SURGE_BRANCH=$SURGE_VERSION
+        echo "Exporting to new version '$SURGE_VERSION'"
+        export SURGE_LOCAL_BRANCH=$SURGE_VERSION
       fi
-      $GHR/ghr $PRE -b "Release $SURGE_VERSION" -recreate $SURGE_BRANCH releases
 
-      . $AGENT_TEMPDIRECTORY/update-website.sh $SURGE_BRANCH $SURGE_VERSION
+      # Move the website generation here before the release to avoid web rebuild latency being quite as bad
+      . $AGENT_TEMPDIRECTORY/checkout-website.sh
+
+      pushd surge-synthesizer.github.io
+      mv ../website_includes/*md _includes
+
+      if [ "$SURGE_LOCAL_BRANCH" == "NIGHTLY" ]; then
+        echo $(date "+%Y-%m-%d %H:%M:%S %Z") > _includes/latest_build_time
+        echo https://github.com/surge-synthesizer/releases/releases/download/$SURGE_LOCAL_BRANCH/Surge-$SURGE_VERSION-Setup.dmg > _includes/latest_macos_url
+        echo https://github.com/surge-synthesizer/releases/releases/download/$SURGE_LOCAL_BRANCH/Surge-$SURGE_VERSION-fat-Setup.dmg > _includes/latest_macos_fat_url
+        echo https://github.com/surge-synthesizer/releases/releases/download/$SURGE_LOCAL_BRANCH/Surge-$SURGE_VERSION-Setup.exe > _includes/latest_win_x64_url
+        echo https://github.com/surge-synthesizer/releases/releases/download/$SURGE_LOCAL_BRANCH/Surge-$SURGE_VERSION-win64.zip > _includes/latest_win_x64_zip_url
+        echo https://github.com/surge-synthesizer/releases/releases/download/$SURGE_LOCAL_BRANCH/Surge-$SURGE_VERSION-Setup-x86.exe > _includes/latest_win_x86_url
+        echo https://github.com/surge-synthesizer/releases/releases/download/$SURGE_LOCAL_BRANCH/Surge-linux-x64-$SURGE_VERSION.deb > _includes/latest_linux_x64_url
+        echo $SURGE_VERSION > _includes/latest_version
+        cp ../git_info/* _includes
+      else
+        echo $(date "+%Y-%m-%d") > _includes/stable_build_time
+        echo $SURGE_LOCAL_BRANCH > _includes/stable_build_version
+        echo https://github.com/surge-synthesizer/releases/releases/download/$SURGE_LOCAL_BRANCH/Surge-$SURGE_VERSION-Setup.dmg > _includes/stable_macos_url
+        echo https://github.com/surge-synthesizer/releases/releases/download/$SURGE_LOCAL_BRANCH/Surge-$SURGE_VERSION-Setup.exe > _includes/stable_win_x64_url
+        echo https://github.com/surge-synthesizer/releases/releases/download/$SURGE_LOCAL_BRANCH/Surge-$SURGE_VERSION-win64.zip > _includes/stable_win_x64_zip_url
+        echo https://github.com/surge-synthesizer/releases/releases/download/$SURGE_LOCAL_BRANCH/Surge-$SURGE_VERSION-Setup-x86.exe > _includes/stable_win_x86_url
+        echo https://github.com/surge-synthesizer/releases/releases/download/$SURGE_LOCAL_BRANCH/Surge-linux-x64-$SURGE_VERSION.deb > _includes/stable_linux_x64_url
+        cp ../git_info/* _includes
+      fi
+
+      git diff
+      git add _includes
+      git commit -m "Update releases for $SURGE_VERSION"
+      git push
+      export GIT_LOG_DISP=`cat _includes/git_nightly_log_display`
+      popd
+
+      # And now do the upload
+      $GHR/ghr $PRE -b "Release $SURGE_VERSION" -recreate $SURGE_LOCAL_BRANCH releases
+
+      # Finally tell discord
+      curl -i -H "Accept: application/json" -H "Content-Type:application/json" -X POST --data "{\"content\": \"A New Nightly is Ready\n*${SURGE_VERSION}*\n\`${GIT_LOG_DISP}\`\nhttps://surge-synthesizer.github.io/nightly\"}" `cat $AGENT_TEMPDIRECTORY/discord-nightly.webhook`
     displayName: Perform Release
